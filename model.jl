@@ -9,6 +9,7 @@ struct Config
     n_kv_heads::Int
     vocab_size::Int
     seq_len::Int
+    buffer_layers::Int
 end
 
 struct Layer{T<:AbstractFloat}
@@ -21,6 +22,8 @@ struct Layer{T<:AbstractFloat}
     w3::Matrix{T}
     rms_att_weight::Matrix{T}
     rms_ffn_weight::Matrix{T}
+    key_cache::Matrix{T,3}
+    value_cache::Matrix{T,3}
 end
 
 struct LayerGPU{T<:AbstractFloat}
@@ -33,6 +36,8 @@ struct LayerGPU{T<:AbstractFloat}
     w3::CuArray{T}
     rms_att_weight::CuArray{T}
     rms_ffn_weight::CuArray{T}
+    key_cache::CuArray{T}
+    value_cache::CuArray{T}
     LayerGPU(c::Config) = new(
         CuArray{T}(undef, c.dim, c.dim),
         CuArray{T}(undef, c.dim, c.dim),
@@ -42,7 +47,8 @@ struct LayerGPU{T<:AbstractFloat}
         CuArray{T}(undef, c.h_dim, c.dim),
         CuArray{T}(undef, c.dim, c.h_dim),
         CuArray{T}(undef, c.dim, 1),
-        CuArray{T}(undef, c.dim, 1)
+        CuArray{T}(undef, c.dim, 1),
+        CuArray{T}(undef, c.dim, c.seq_len)
     )
 end
 
@@ -66,7 +72,9 @@ function Layer(f::IOStream, c::Config) where {T<:AbstractFloat}
     skip(f, sizeof(rms_att_weight))
     rms_ffn_weight = mmap(f, Matrix{T}, (c.dim, 1))
     skip(f, sizeof(rms_ffn_weight))
-    Layer{T}(wq, wk, wv, wo, w1, w2, w3, rms_att_weight, rms_ffn_weight)
+    key_cache = zeros(T, c.dim, c.seq_len)
+    value_cache = zeros(T, c.dim, c.seq_len)
+    Layer{T}(wq, wk, wv, wo, w1, w2, w3, rms_att_weight, rms_ffn_weight, key_cache, value_cache)
 end
 
 
@@ -99,6 +107,31 @@ function copyto!(layer_gpu::LayerGPU{T}, layer_cpu::Layer{T}) where {T<:Abstract
 end
 
 
-struct GPUBuffer
-    
+struct GPUBuffer{T<:AbstractFloat}
+    layers::Vector{LayersGPU{T}}
+    x::CuArray{T}
+    xb::CuArray{T}
+    xb2::CuArray{T}
+    hb::CuArray{T}
+    hb2::CuArray{T}
+    q::CuArray{T}
+    k::CuArray{T}
+    v::CuArray{T}
+    att::CuArray{T}
+    logits::CuArray{T}
+end
+
+function GPUBuffer(c::Config) where {T<:AbstractFloat}
+    layers = [LayerGPU{T}(c) for _ in 1:2*c.buffer_layers]
+    x = CuArray{T}(undef, c.dim)
+    xb = CuArray{T}(undef, c.dim)
+    xb2 = CuArray{T}(undef, c.dim)
+    hb = CuArray{T}(undef, c.dim)
+    hb2 = CuArray{T}(undef, c.dim)
+    q = CuArray{T}(undef, c.dim)
+    k = CuArray{T}(undef, c.dim)
+    v = CuArray{T}(undef, c.dim)
+    att = CuArray{T}(undef, c.seq_len)
+    logits = CuArray{T}(undef, c.seq_len)
+    GPUBuffer(layers, x, xb, xb2, hb, hb2, q, k, v, att, logits)
 end
